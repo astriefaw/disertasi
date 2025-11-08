@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Face Detection Benchmark - WebAssembly</title>
+  <title>Face Detection Benchmark - WebAssembly (OpenCV.js)</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -34,66 +34,92 @@
   </style>
 </head>
 <body>
-  <h1>Face Detection Benchmark - WebAssembly</h1>
+  <h1>Face Detection Benchmark - WebAssembly (OpenCV.js)</h1>
 
   <p>
     Halaman ini digunakan untuk mengukur waktu eksekusi algoritma face detection
-    yang diimplementasikan dengan <strong>WebAssembly</strong>.
-    Input dan gambar uji harus sama dengan versi JavaScript agar komparasi valid.
+    yang diimplementasikan dengan <strong>OpenCV.js (WebAssembly)</strong>.
+    Gunakan gambar uji dan parameter yang sama dengan versi JavaScript agar
+    komparasi valid.
   </p>
 
-  <p id="status">Status: loading WebAssembly module...</p>
+  <p id="status">Status: memuat OpenCV.js (WASM)...</p>
 
+  <!-- Gambar uji HARUS sama dengan yang digunakan di face-js.html -->
   <img id="test-image" src="test-face.jpg" alt="Test face image">
 
   <div>
     <label for="iterations">Iterations: </label>
     <input type="number" id="iterations" value="10" min="1" max="1000">
-    <button id="run-btn" disabled>Run Benchmark (WASM)</button>
+    <button id="run-btn" disabled>Run Benchmark (OpenCV.js WASM)</button>
   </div>
 
   <h3>Hasil</h3>
   <p id="summary">Belum ada pengujian.</p>
   <div id="log"></div>
 
+  <!-- ===================== OpenCV.js (WASM) ====================== -->
+  <!-- CDN resmi OpenCV 4.x -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js"
+          onload="onOpenCvLoaded();"></script>
+
   <script>
-    // ============================================
-    // 1. Inisialisasi modul WebAssembly
-    // ============================================
-    let wasmInstance = null;
+    let cvReady = false;
+    let cascadeReady = false;
+    let faceClassifier = null;
 
-    // importObject bergantung pada modul WASM Anda
-    const importObject = {
-      env: {
-        // Contoh: jika modul perlu fungsi log
-        // log_i32: (x) => console.log("log_i32 from WASM:", x)
-      }
-    };
+    const statusEl = document.getElementById('status');
+    const runBtn = document.getElementById('run-btn');
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
 
-    async function initWasm() {
-      try {
-        const response = await WebAssembly.instantiateStreaming(
-          fetch("face_detector.wasm"),
-          importObject
-        );
-        wasmInstance = response.instance;
+    // Dipanggil setelah file opencv.js selesai diunduh
+    function onOpenCvLoaded() {
+      statusEl.textContent = "Status: inisialisasi OpenCV.js (WASM)...";
 
-        document.getElementById('status').textContent =
-          "Status: WebAssembly module loaded.";
-        document.getElementById('run-btn').disabled = false;
-
-        console.log("WASM exports:", wasmInstance.exports);
-      } catch (err) {
-        console.error("Error loading WASM:", err);
-        document.getElementById('status').textContent =
-          "Status: gagal memuat WebAssembly. Cek console.";
-      }
+      // callback saat runtime OpenCV.js siap (WASM sudah ter-compile)
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true;
+        statusEl.textContent = "Status: OpenCV.js (WASM) siap, memuat Haar cascade...";
+        loadCascade()
+          .then(() => {
+            cascadeReady = true;
+            statusEl.textContent = "Status: OpenCV.js (WASM) + Haar cascade siap.";
+            runBtn.disabled = false;
+          })
+          .catch(err => {
+            console.error("Error loading cascade:", err);
+            statusEl.textContent = "Status: gagal memuat Haar cascade. Cek console.";
+          });
+      };
     }
 
-    // ============================================
-    // 2. Fungsi helper untuk mengambil pixel image
-    //    dan (opsional) mengirim ke memory WASM
-    // ============================================
+    // ================== Load Haar Cascade face detector ==================
+    async function loadCascade() {
+      // File XML harus Anda simpan di repo: 'haarcascade_frontalface_default.xml'
+      const response = await fetch('haarcascade_frontalface_default.xml');
+      if (!response.ok) {
+        throw new Error('Gagal fetch haarcascade_frontalface_default.xml (' + response.status + ')');
+      }
+
+      const buffer = await response.arrayBuffer();
+      const data = new Uint8Array(buffer);
+
+      // Simpan ke virtual filesystem OpenCV.js
+      cv.FS_createDataFile(
+        '/',                                  // path
+        'haarcascade_frontalface_default.xml',// nama file
+        data,
+        true,                                 // canRead
+        false,                                // canWrite
+        false                                 // canOwn
+      );
+
+      faceClassifier = new cv.CascadeClassifier();
+      faceClassifier.load('haarcascade_frontalface_default.xml');
+    }
+
+    // ================== Helper: ambil ImageData dari <img> ==================
     function getImageDataFromImg(imgEl) {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -105,71 +131,55 @@
       return ctx.getImageData(0, 0, canvas.width, canvas.height);
     }
 
-    // ============================================
-    // 3. Fungsi face detection WASM
-    // ============================================
-    /**
-     * TODO: Sesuaikan bagian ini dengan cara modul WASM Anda bekerja.
-     * Pola umum:
-     *   1. Ambil ImageData dari canvas
-     *   2. Copy pixel ke linear memory WASM
-     *   3. Panggil fungsi ekspor WASM, misalnya "detect_face(ptr, width, height)"
-     *   4. Ambil hasil (misal jumlah wajah terdeteksi)
-     */
+    // ================== Face detection dengan OpenCV.js (WASM) =============
     async function detectFaceWasm(imageElement) {
-      if (!wasmInstance) {
-        throw new Error("WASM belum terinisialisasi");
+      if (!cvReady) {
+        throw new Error("OpenCV.js belum siap");
+      }
+      if (!cascadeReady || !faceClassifier) {
+        throw new Error("Haar cascade belum siap");
       }
 
-      // ====== GANTI BAGIAN INI DENGAN IMPLEMENTASI SEBENARNYA ======
       const imageData = getImageDataFromImg(imageElement);
-      const width = imageData.width;
-      const height = imageData.height;
-      const pixels = imageData.data; // Uint8ClampedArray RGBA
 
-      // Contoh pseudo-code: asumsi WASM punya:
-      //   - memory: WebAssembly.Memory
-      //   - alloc(size): mengembalikan pointer
-      //   - free(ptr): membebaskan
-      //   - detect_face(ptr, width, height) -> jumlah wajah
-      const {
-        memory,
-        alloc,
-        free,
-        detect_face
-      } = wasmInstance.exports;
+      // Konversi ke cv.Mat
+      const src = cv.matFromImageData(imageData);
+      const gray = new cv.Mat();
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
-      const byteLength = pixels.byteLength;
-      const ptr = alloc(byteLength);
+      const faces = new cv.RectVector();
+      const mSize = new cv.Size(0, 0);
 
-      const wasmBytes = new Uint8Array(memory.buffer, ptr, byteLength);
-      wasmBytes.set(pixels);
+      // Deteksi wajah
+      faceClassifier.detectMultiScale(
+        gray,
+        faces,
+        1.1,    // scaleFactor
+        3,      // minNeighbors
+        0,      // flags
+        mSize,  // minSize
+        mSize   // maxSize (0,0 = no limit)
+      );
 
-      // Panggil fungsi deteksi
-      const faces = detect_face(ptr, width, height);
+      const count = faces.size();
 
-      // Bebaskan memory kalau perlu
-      if (typeof free === 'function') {
-        free(ptr);
-      }
+      // Bersihkan memory
+      src.delete();
+      gray.delete();
+      faces.delete();
+      // cv.Size tidak perlu di-delete
 
-      return { faces };
-      // =============================================================
+      return { faces: count };
     }
 
-    // ============================================
-    // 4. Fungsi benchmarking
-    // ============================================
+    // ================== Benchmark loop ==================
     async function runBenchmarkWasm() {
       const img = document.getElementById('test-image');
       const iterInput = document.getElementById('iterations');
       const iterations = parseInt(iterInput.value, 10) || 1;
 
-      const logEl = document.getElementById('log');
-      const summaryEl = document.getElementById('summary');
-
-      logEl.textContent = "Running WebAssembly benchmark...\n";
-      console.log("===== WebAssembly Face Detection Benchmark =====");
+      logEl.textContent = "Running OpenCV.js (WASM) benchmark...\n";
+      console.log("===== OpenCV.js (WASM) Face Detection Benchmark =====");
 
       const times = [];
 
@@ -192,7 +202,7 @@
       const max = Math.max(...times);
 
       const summaryText =
-        `WebAssembly - Iterations: ${iterations}\n` +
+        `OpenCV.js (WASM) - Iterations: ${iterations}\n` +
         `Rata-rata: ${avg.toFixed(2)} ms\n` +
         `Min: ${min.toFixed(2)} ms, Max: ${max.toFixed(2)} ms`;
 
@@ -205,20 +215,13 @@
       })));
     }
 
-    // ============================================
-    // 5. Event binding & init
-    // ============================================
-    document.getElementById('run-btn').addEventListener('click', () => {
+    // ================== Event binding ==================
+    runBtn.addEventListener('click', () => {
       runBenchmarkWasm().catch(err => {
         console.error(err);
-        document.getElementById('log').textContent += "\nError: " + err.message;
+        logEl.textContent += "\nError: " + err.message;
       });
     });
-
-    // Inisialisasi WASM saat halaman load
-    window.onload = () => {
-      initWasm();
-    };
   </script>
 </body>
 </html>
