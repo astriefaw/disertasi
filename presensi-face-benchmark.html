@@ -24,20 +24,27 @@
       border-radius: 10px;
       box-shadow: 0 0 10px rgba(0,0,0,0.1);
     }
-    video {
-      display: block;
-      margin: 0 auto;
-      border-radius: 10px;
+    .video-wrapper {
+      position: relative;
       width: 480px;
       height: 360px;
+      margin: 0 auto;
+    }
+    video {
+      width: 480px;
+      height: 360px;
+      border-radius: 10px;
       background: black;
+      display: block;
     }
     canvas {
       position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-      top: 120px;
+      left: 0;
+      top: 0;
+      width: 480px;
+      height: 360px;
       border-radius: 10px;
+      pointer-events: none;
     }
     .controls {
       text-align: center;
@@ -70,6 +77,7 @@
       max-height: 180px;
       overflow-y: auto;
       white-space: pre-wrap;
+      margin-top: 10px;
     }
   </style>
 </head>
@@ -79,8 +87,10 @@
   </header>
 
   <main>
-    <video id="video" autoplay muted></video>
-    <canvas id="overlay"></canvas>
+    <div class="video-wrapper">
+      <video id="video" autoplay muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
 
     <div class="controls">
       <button id="startBtn">Mulai Kamera</button>
@@ -99,42 +109,61 @@
   <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoaded()"></script>
 
   <script>
-    const video = document.getElementById('video');
-    const overlay = document.getElementById('overlay');
-    const ctx = overlay.getContext('2d');
-    const statusEl = document.getElementById('status');
-    const logEl = document.getElementById('log');
-    const toggleBtn = document.getElementById('toggleModeBtn');
-    const benchmarkBtn = document.getElementById('benchmarkBtn');
+    const video      = document.getElementById('video');
+    const overlay    = document.getElementById('overlay');
+    const ctx        = overlay.getContext('2d');
+    const statusEl   = document.getElementById('status');
+    const logEl      = document.getElementById('log');
+    const toggleBtn  = document.getElementById('toggleModeBtn');
+    const benchBtn   = document.getElementById('benchmarkBtn');
 
-    let mode = 'opencv'; // atau 'faceapi'
+    let mode = 'opencv'; // 'opencv' atau 'faceapi'
     let cvReady = false;
     let faceapiReady = false;
     let classifier = null;
+    let cap = null; // cv.VideoCapture untuk OpenCV.js
     let benchmarkActive = false;
 
     /* ---------------- Kamera ---------------- */
     async function startCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      video.srcObject = stream;
-      overlay.width = video.width = 480;
-      overlay.height = video.height = 360;
-      statusEl.textContent = 'Kamera aktif.';
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          video.play();
+          overlay.width  = video.videoWidth  || 480;
+          overlay.height = video.videoHeight || 360;
+          statusEl.textContent = 'Kamera aktif.';
+        };
+      } catch (err) {
+        console.error(err);
+        alert('Tidak bisa mengakses kamera: ' + err.message);
+      }
     }
 
     /* ---------------- OpenCV.js Init ---------------- */
     function onOpenCvLoaded() {
       cv['onRuntimeInitialized'] = async () => {
-        cvReady = true;
-        await loadCascade();
-        statusEl.textContent = 'OpenCV.js (WASM) siap.';
-        log('✅ OpenCV.js (WASM) loaded.');
+        try {
+          await loadCascade();
+          cvReady = true;
+          statusEl.textContent = 'OpenCV.js (WASM) siap.';
+          log('✅ OpenCV.js (WASM) loaded & cascade siap.');
+        } catch (err) {
+          console.error('Error load cascade:', err);
+          statusEl.textContent = 'Gagal memuat Haar cascade. Cek console.';
+        }
       };
     }
 
     async function loadCascade() {
-      const xml = await fetch('haarcascade_frontalface_default.xml');
-      const data = new Uint8Array(await xml.arrayBuffer());
+      const response = await fetch('haarcascade_frontalface_default.xml');
+      if (!response.ok) {
+        throw new Error('Gagal fetch haarcascade_frontalface_default.xml (' + response.status + ')');
+      }
+      const buffer = await response.arrayBuffer();
+      const data = new Uint8Array(buffer);
+
       cv.FS_createDataFile('/', 'haarcascade_frontalface_default.xml', data, true, false);
       classifier = new cv.CascadeClassifier();
       classifier.load('haarcascade_frontalface_default.xml');
@@ -143,55 +172,87 @@
     /* ---------------- face-api.js Init ---------------- */
     async function initFaceApi() {
       const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/';
+      statusEl.textContent = 'Memuat model face-api.js...';
       await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
       faceapiReady = true;
       log('✅ face-api.js (TensorFlow.js) loaded.');
+      statusEl.textContent = 'face-api.js dan OpenCV.js sedang inisialisasi...';
     }
 
     /* ---------------- Deteksi wajah OpenCV (WASM) ---------------- */
     function detectOpenCv() {
-      const mat = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-      const gray = new cv.Mat();
+      if (!cvReady || !classifier) {
+        throw new Error('OpenCV.js belum siap');
+      }
+      if (!cap) {
+        cap = new cv.VideoCapture(video);
+      }
+
+      const src   = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+      const gray  = new cv.Mat();
       const faces = new cv.RectVector();
 
-      cv.cvtColor(cv.imread(video), gray, cv.COLOR_RGBA2GRAY);
+      // ambil frame dari video ke src
+      cap.read(src);
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
       classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
-      ctx.lineWidth = 2;
+      ctx.lineWidth   = 2;
       ctx.strokeStyle = 'lime';
+
       for (let i = 0; i < faces.size(); ++i) {
-        const face = faces.get(i);
-        ctx.strokeRect(face.x, face.y, face.width, face.height);
+        const f = faces.get(i);
+        ctx.strokeRect(f.x, f.y, f.width, f.height);
       }
 
-      mat.delete(); gray.delete(); faces.delete();
-      return faces.size();
+      const count = faces.size();
+      src.delete();
+      gray.delete();
+      faces.delete();
+
+      return count;
     }
 
     /* ---------------- Deteksi wajah face-api.js ---------------- */
     async function detectFaceApi() {
-      const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+      if (!faceapiReady) {
+        throw new Error('face-api.js belum siap');
+      }
+      const options = new faceapi.TinyFaceDetectorOptions({
+        inputSize: 224,
+        scoreThreshold: 0.5
+      });
+
       const detections = await faceapi.detectAllFaces(video, options);
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
-      ctx.lineWidth = 2;
+      ctx.lineWidth   = 2;
       ctx.strokeStyle = 'red';
-      detections.forEach(d => {
-        const box = d.box;
+
+      detections.forEach(det => {
+        const box = det.box;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
       });
+
       return detections.length;
     }
 
     /* ---------------- Benchmark ---------------- */
     async function runBenchmark() {
       if (!cvReady || !faceapiReady) {
-        alert('Model belum siap!');
+        alert('Model belum siap (tunggu inisialisasi selesai).');
         return;
       }
+      if (video.readyState < 2) {
+        alert('Kamera belum siap, klik Mulai Kamera dulu.');
+        return;
+      }
+
       benchmarkActive = true;
-      log(`🚀 Benchmark dimulai dengan mode: ${mode.toUpperCase()}`);
+      const modeLabel = (mode === 'opencv') ? 'OPENCV' : 'FACEAPI';
+      log(`🚀 Benchmark dimulai dengan mode: ${modeLabel}`);
 
       const iter = 10;
       const times = [];
@@ -207,13 +268,14 @@
         const delta = t1 - t0;
         times.push(delta);
         log(`Iterasi ${i+1}: ${delta.toFixed(2)} ms, faces=${faces}`);
-        await new Promise(r => setTimeout(r, 100)); // jeda antar iterasi
+        await new Promise(r => setTimeout(r, 100)); // jeda
       }
+
       const avg = times.reduce((a,b)=>a+b,0)/times.length;
       const min = Math.min(...times);
       const max = Math.max(...times);
-      log(`📊 ${mode.toUpperCase()} rata-rata: ${avg.toFixed(2)} ms (min=${min.toFixed(2)}, max=${max.toFixed(2)})`);
-      statusEl.textContent = `Selesai benchmark ${mode.toUpperCase()}`;
+      log(`📊 ${modeLabel} rata-rata: ${avg.toFixed(2)} ms (min=${min.toFixed(2)}, max=${max.toFixed(2)})`);
+      statusEl.textContent = `Selesai benchmark ${modeLabel}`;
       benchmarkActive = false;
     }
 
@@ -226,17 +288,26 @@
 
     /* ---------------- Event ---------------- */
     document.getElementById('startBtn').onclick = startCamera;
-    document.getElementById('toggleModeBtn').onclick = () => {
-      mode = mode === 'opencv' ? 'faceapi' : 'opencv';
-      toggleBtn.textContent = `Mode: ${mode === 'opencv' ? 'OpenCV.js (WASM)' : 'face-api.js (TensorFlow)'}`;
-      statusEl.textContent = `Mode aktif: ${mode}`;
+
+    toggleBtn.onclick = () => {
+      mode = (mode === 'opencv') ? 'faceapi' : 'opencv';
+      toggleBtn.textContent =
+        'Mode: ' + (mode === 'opencv' ? 'OpenCV.js (WASM)' : 'face-api.js (TensorFlow)');
+      statusEl.textContent = `Mode aktif: ${mode === 'opencv' ? 'OPENCV' : 'FACEAPI'}`;
     };
-    benchmarkBtn.onclick = runBenchmark;
+
+    benchBtn.onclick = () => {
+      runBenchmark().catch(err => {
+        console.error(err);
+        log('❌ Error benchmark: ' + err.message);
+      });
+    };
 
     /* ---------------- Inisialisasi ---------------- */
     window.onload = async () => {
-      await initFaceApi();
-      statusEl.textContent = 'face-api.js dan OpenCV.js siap digunakan.';
+      await initFaceApi();   // load face-api.js model
+      // OpenCV akan menyelesaikan init sendiri via onOpenCvLoaded
+      statusEl.textContent = 'face-api.js siap, menunggu OpenCV.js (WASM)...';
     };
   </script>
 </body>
