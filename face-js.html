@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Face Detection Benchmark - JavaScript (face-api.js)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 20px auto;
+      line-height: 1.5;
+    }
+    #log {
+      white-space: pre-wrap;
+      background: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      max-height: 250px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    img {
+      max-width: 300px;
+      display: block;
+      margin-bottom: 10px;
+    }
+    label {
+      font-size: 14px;
+    }
+    #status {
+      font-size: 14px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Face Detection Benchmark - JavaScript (face-api.js)</h1>
+
+  <p>
+    Halaman ini digunakan untuk mengukur waktu eksekusi algoritma face detection
+    yang diimplementasikan dengan <strong>JavaScript murni</strong> menggunakan
+    library <code>face-api.js</code> (TensorFlow.js, tanpa WebAssembly khusus).
+    Gambar uji dan skenario pengujian sebaiknya sama dengan versi WebAssembly
+    (OpenCV.js) agar komparasi valid.
+  </p>
+
+  <p id="status">Status: memuat face-api.js dan model...</p>
+
+  <!-- Gambar uji HARUS sama dengan yang digunakan di versi WASM -->
+  <img id="test-image" src="test-face.jpg" alt="Test face image">
+
+  <div>
+    <label for="iterations">Iterations: </label>
+    <input type="number" id="iterations" value="10" min="1" max="1000">
+    <button id="run-btn" disabled>Run Benchmark (JS face-api.js)</button>
+  </div>
+
+  <h3>Hasil</h3>
+  <p id="summary">Belum ada pengujian.</p>
+  <div id="log"></div>
+
+  <!-- ======================= face-api.js CDN ======================= -->
+  <!-- Versi bundling yang sudah include tfjs -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const runBtn = document.getElementById('run-btn');
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+
+    let modelsLoaded = false;
+
+    // ================== Load model face-api.js ==================
+    async function loadModels() {
+      try {
+        // Folder 'models/' harus berisi file model tiny_face_detector
+        // seperti: tiny_face_detector_model-weights_manifest.json dan .bin
+        const MODEL_URL = 'models/';
+
+        statusEl.textContent = 'Status: memuat model tiny_face_detector...';
+
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+
+        modelsLoaded = true;
+        statusEl.textContent = 'Status: model face-api.js siap.';
+        runBtn.disabled = false;
+
+        console.log('face-api.js models loaded');
+      } catch (err) {
+        console.error('Error loading models:', err);
+        statusEl.textContent = 'Status: gagal memuat model face-api.js. Cek console.';
+      }
+    }
+
+    // ================== Face detection dengan face-api.js ==================
+    async function detectFaceJs(imageElement) {
+      if (!modelsLoaded) {
+        throw new Error('Model face-api.js belum siap');
+      }
+
+      // Parameter bisa Anda sesuaikan untuk trade-off kecepatan vs akurasi
+      const options = new faceapi.TinyFaceDetectorOptions({
+        inputSize: 320,       // 160, 224, 320, 416, 512 (semakin besar, semakin lambat)
+        scoreThreshold: 0.5
+      });
+
+      // Deteksi semua wajah pada gambar
+      const detections = await faceapi.detectAllFaces(imageElement, options);
+
+      return { faces: detections.length };
+    }
+
+    // ================== Benchmark loop ==================
+    async function runBenchmarkJs() {
+      const img = document.getElementById('test-image');
+      const iterInput = document.getElementById('iterations');
+      const iterations = parseInt(iterInput.value, 10) || 1;
+
+      logEl.textContent = 'Running JavaScript (face-api.js) benchmark...\n';
+      console.log('===== JavaScript (face-api.js) Face Detection Benchmark =====');
+
+      const times = [];
+
+      for (let i = 0; i < iterations; i++) {
+        const t0 = performance.now();
+        const result = await detectFaceJs(img);
+        const t1 = performance.now();
+        const execTime = t1 - t0;
+
+        times.push(execTime);
+
+        const line = `Iterasi ${i + 1}: ${execTime.toFixed(2)} ms, faces = ${result.faces}\n`;
+        logEl.textContent += line;
+        console.log(line.trim());
+      }
+
+      const sum = times.reduce((a, b) => a + b, 0);
+      const avg = sum / times.length;
+      const min = Math.min(...times);
+      const max = Math.max(...times);
+
+      const summaryText =
+        `JavaScript (face-api.js) - Iterations: ${iterations}\n` +
+        `Rata-rata: ${avg.toFixed(2)} ms\n` +
+        `Min: ${min.toFixed(2)} ms, Max: ${max.toFixed(2)} ms`;
+
+      summaryEl.textContent = summaryText;
+      logEl.textContent += '\n' + summaryText + '\n';
+
+      console.table(times.map((t, idx) => ({
+        iteration: idx + 1,
+        time_ms: t
+      })));
+    }
+
+    // ================== Event binding & init ==================
+    runBtn.addEventListener('click', () => {
+      runBenchmarkJs().catch(err => {
+        console.error(err);
+        logEl.textContent += '\nError: ' + err.message;
+      });
+    });
+
+    window.addEventListener('load', () => {
+      loadModels();
+    });
+  </script>
+</body>
+</html>
