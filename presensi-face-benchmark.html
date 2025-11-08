@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Face Detection Benchmark - OpenCV.js (WASM) vs face-api.js</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      background: #003366;
+      color: white;
+      padding: 15px;
+      text-align: center;
+    }
+    main {
+      max-width: 900px;
+      margin: 20px auto;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    video {
+      display: block;
+      margin: 0 auto;
+      border-radius: 10px;
+      width: 480px;
+      height: 360px;
+      background: black;
+    }
+    canvas {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      top: 120px;
+      border-radius: 10px;
+    }
+    .controls {
+      text-align: center;
+      margin-top: 15px;
+    }
+    button {
+      background: #003366;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      margin: 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+    button:hover {
+      background: #0055aa;
+    }
+    #status {
+      text-align: center;
+      margin-top: 10px;
+      font-size: 14px;
+      color: #555;
+    }
+    #log {
+      background: #f5f5f5;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 13px;
+      max-height: 180px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Face Detection Benchmark<br>OpenCV.js (WASM) vs face-api.js</h1>
+  </header>
+
+  <main>
+    <video id="video" autoplay muted></video>
+    <canvas id="overlay"></canvas>
+
+    <div class="controls">
+      <button id="startBtn">Mulai Kamera</button>
+      <button id="toggleModeBtn">Mode: OpenCV.js (WASM)</button>
+      <button id="benchmarkBtn">Benchmark</button>
+    </div>
+
+    <div id="status">Status: Menunggu inisialisasi...</div>
+    <div id="log"></div>
+  </main>
+
+  <!-- face-api.js (TensorFlow.js backend) -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+  <!-- OpenCV.js (WASM) -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoaded()"></script>
+
+  <script>
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const toggleBtn = document.getElementById('toggleModeBtn');
+    const benchmarkBtn = document.getElementById('benchmarkBtn');
+
+    let mode = 'opencv'; // atau 'faceapi'
+    let cvReady = false;
+    let faceapiReady = false;
+    let classifier = null;
+    let benchmarkActive = false;
+
+    /* ---------------- Kamera ---------------- */
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      overlay.width = video.width = 480;
+      overlay.height = video.height = 360;
+      statusEl.textContent = 'Kamera aktif.';
+    }
+
+    /* ---------------- OpenCV.js Init ---------------- */
+    function onOpenCvLoaded() {
+      cv['onRuntimeInitialized'] = async () => {
+        cvReady = true;
+        await loadCascade();
+        statusEl.textContent = 'OpenCV.js (WASM) siap.';
+        log('✅ OpenCV.js (WASM) loaded.');
+      };
+    }
+
+    async function loadCascade() {
+      const xml = await fetch('haarcascade_frontalface_default.xml');
+      const data = new Uint8Array(await xml.arrayBuffer());
+      cv.FS_createDataFile('/', 'haarcascade_frontalface_default.xml', data, true, false);
+      classifier = new cv.CascadeClassifier();
+      classifier.load('haarcascade_frontalface_default.xml');
+    }
+
+    /* ---------------- face-api.js Init ---------------- */
+    async function initFaceApi() {
+      const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/';
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      faceapiReady = true;
+      log('✅ face-api.js (TensorFlow.js) loaded.');
+    }
+
+    /* ---------------- Deteksi wajah OpenCV (WASM) ---------------- */
+    function detectOpenCv() {
+      const mat = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+      const gray = new cv.Mat();
+      const faces = new cv.RectVector();
+
+      cv.cvtColor(cv.imread(video), gray, cv.COLOR_RGBA2GRAY);
+      classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
+
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'lime';
+      for (let i = 0; i < faces.size(); ++i) {
+        const face = faces.get(i);
+        ctx.strokeRect(face.x, face.y, face.width, face.height);
+      }
+
+      mat.delete(); gray.delete(); faces.delete();
+      return faces.size();
+    }
+
+    /* ---------------- Deteksi wajah face-api.js ---------------- */
+    async function detectFaceApi() {
+      const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+      const detections = await faceapi.detectAllFaces(video, options);
+
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'red';
+      detections.forEach(d => {
+        const box = d.box;
+        ctx.strokeRect(box.x, box.y, box.width, box.height);
+      });
+      return detections.length;
+    }
+
+    /* ---------------- Benchmark ---------------- */
+    async function runBenchmark() {
+      if (!cvReady || !faceapiReady) {
+        alert('Model belum siap!');
+        return;
+      }
+      benchmarkActive = true;
+      log(`🚀 Benchmark dimulai dengan mode: ${mode.toUpperCase()}`);
+
+      const iter = 10;
+      const times = [];
+      for (let i = 0; i < iter; i++) {
+        const t0 = performance.now();
+        let faces = 0;
+        if (mode === 'opencv') {
+          faces = detectOpenCv();
+        } else {
+          faces = await detectFaceApi();
+        }
+        const t1 = performance.now();
+        const delta = t1 - t0;
+        times.push(delta);
+        log(`Iterasi ${i+1}: ${delta.toFixed(2)} ms, faces=${faces}`);
+        await new Promise(r => setTimeout(r, 100)); // jeda antar iterasi
+      }
+      const avg = times.reduce((a,b)=>a+b,0)/times.length;
+      const min = Math.min(...times);
+      const max = Math.max(...times);
+      log(`📊 ${mode.toUpperCase()} rata-rata: ${avg.toFixed(2)} ms (min=${min.toFixed(2)}, max=${max.toFixed(2)})`);
+      statusEl.textContent = `Selesai benchmark ${mode.toUpperCase()}`;
+      benchmarkActive = false;
+    }
+
+    /* ---------------- Utilitas ---------------- */
+    function log(msg) {
+      logEl.textContent += msg + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+    }
+
+    /* ---------------- Event ---------------- */
+    document.getElementById('startBtn').onclick = startCamera;
+    document.getElementById('toggleModeBtn').onclick = () => {
+      mode = mode === 'opencv' ? 'faceapi' : 'opencv';
+      toggleBtn.textContent = `Mode: ${mode === 'opencv' ? 'OpenCV.js (WASM)' : 'face-api.js (TensorFlow)'}`;
+      statusEl.textContent = `Mode aktif: ${mode}`;
+    };
+    benchmarkBtn.onclick = runBenchmark;
+
+    /* ---------------- Inisialisasi ---------------- */
+    window.onload = async () => {
+      await initFaceApi();
+      statusEl.textContent = 'face-api.js dan OpenCV.js siap digunakan.';
+    };
+  </script>
+</body>
+</html>
