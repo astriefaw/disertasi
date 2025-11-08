@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Face Detection Benchmark - WebAssembly (OpenCV.js)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 20px auto;
+      line-height: 1.5;
+    }
+    #log {
+      white-space: pre-wrap;
+      background: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      max-height: 250px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    img {
+      max-width: 300px;
+      display: block;
+      margin-bottom: 10px;
+    }
+    label {
+      font-size: 14px;
+    }
+    #status {
+      font-size: 14px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Face Detection Benchmark - WebAssembly (OpenCV.js)</h1>
+
+  <p>
+    Halaman ini digunakan untuk mengukur waktu eksekusi algoritma face detection
+    yang diimplementasikan dengan <strong>OpenCV.js</strong>, yang berjalan
+    di atas <strong>WebAssembly</strong> di browser. Gambar uji, jumlah iterasi,
+    dan mekanisme pengukuran dibuat sama dengan versi JavaScript
+    (<code>face-js.html</code>) agar skenario pengujian bersifat “apple to apple”.
+  </p>
+
+  <p id="status">Status: memuat OpenCV.js (WASM)...</p>
+
+  <!-- Gambar uji HARUS sama dengan yang digunakan di face-js.html -->
+  <img id="test-image" src="test-face.jpg" alt="Test face image">
+
+  <div>
+    <label for="iterations">Iterations: </label>
+    <input type="number" id="iterations" value="10" min="1" max="1000">
+    <button id="run-btn" disabled>Run Benchmark (OpenCV.js WASM)</button>
+  </div>
+
+  <h3>Hasil</h3>
+  <p id="summary">Belum ada pengujian.</p>
+  <div id="log"></div>
+
+  <!-- ======================= OpenCV.js (WASM) ======================= -->
+  <!-- CDN resmi OpenCV 4.x, sudah mengandung modul WASM -->
+  <script async
+          src="https://docs.opencv.org/4.x/opencv.js"
+          onload="onOpenCvLoaded();"></script>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const runBtn   = document.getElementById('run-btn');
+    const logEl    = document.getElementById('log');
+    const summaryEl= document.getElementById('summary');
+
+    let cvReady = false;
+    let cascadeReady = false;
+    let faceClassifier = null;
+
+    // Dipanggil setelah file opencv.js selesai diunduh
+    function onOpenCvLoaded() {
+      statusEl.textContent = 'Status: inisialisasi OpenCV.js (WASM)...';
+
+      // callback ketika runtime OpenCV (WASM) siap
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true;
+        statusEl.textContent = 'Status: OpenCV.js (WASM) siap, memuat Haar cascade...';
+
+        loadCascade()
+          .then(() => {
+            cascadeReady = true;
+            statusEl.textContent = 'Status: OpenCV.js (WASM) + Haar cascade siap.';
+            runBtn.disabled = false;
+            console.log('OpenCV.js & cascade loaded');
+          })
+          .catch(err => {
+            console.error('Error loading cascade:', err);
+            statusEl.textContent = 'Status: gagal memuat Haar cascade. Cek console.';
+          });
+      };
+    }
+
+    // ================== Load Haar Cascade face detector ==================
+    async function loadCascade() {
+      // File XML harus berada di folder yang sama dengan HTML ini
+      const response = await fetch('haarcascade_frontalface_default.xml');
+      if (!response.ok) {
+        throw new Error('Gagal fetch haarcascade_frontalface_default.xml (' + response.status + ')');
+      }
+
+      const buffer = await response.arrayBuffer();
+      const data = new Uint8Array(buffer);
+
+      // Simpan ke virtual filesystem OpenCV.js
+      cv.FS_createDataFile(
+        '/',                                   // path root
+        'haarcascade_frontalface_default.xml', // nama file
+        data,
+        true,                                  // canRead
+        false,                                 // canWrite
+        false                                  // canOwn
+      );
+
+      faceClassifier = new cv.CascadeClassifier();
+      faceClassifier.load('haarcascade_frontalface_default.xml');
+    }
+
+    // ================== Helper: ambil ImageData dari <img> ==================
+    function getImageDataFromImg(imgEl) {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      canvas.width  = imgEl.naturalWidth  || imgEl.width;
+      canvas.height = imgEl.naturalHeight || imgEl.height;
+
+      ctx.drawImage(imgEl, 0, 0);
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
+    // ================== Face detection dengan OpenCV.js (WASM) =============
+    async function detectFaceWasm(imageElement) {
+      if (!cvReady) {
+        throw new Error('OpenCV.js belum siap');
+      }
+      if (!cascadeReady || !faceClassifier) {
+        throw new Error('Haar cascade belum siap');
+      }
+
+      const imageData = getImageDataFromImg(imageElement);
+
+      // Konversi ke cv.Mat
+      const src = cv.matFromImageData(imageData);
+      const gray = new cv.Mat();
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+      const faces = new cv.RectVector();
+      const mSize = new cv.Size(0, 0);
+
+      // Deteksi wajah dengan Haar Cascade
+      faceClassifier.detectMultiScale(
+        gray,
+        faces,
+        1.1,    // scaleFactor
+        3,      // minNeighbors
+        0,      // flags
+        mSize,  // minSize
+        mSize   // maxSize (0,0 = no limit)
+      );
+
+      const count = faces.size();
+
+      // Bersihkan memory
+      src.delete();
+      gray.delete();
+      faces.delete();
+      // cv.Size tidak perlu di-delete
+
+      return { faces: count };
+    }
+
+    // ================== Benchmark loop ==================
+    async function runBenchmarkWasm() {
+      const img = document.getElementById('test-image');
+      const iterInput = document.getElementById('iterations');
+      const iterations = parseInt(iterInput.value, 10) || 1;
+
+      logEl.textContent = 'Running OpenCV.js (WASM) benchmark...\n';
+      console.log('===== OpenCV.js (WASM) Face Detection Benchmark =====');
+
+      const times = [];
+
+      for (let i = 0; i < iterations; i++) {
+        const t0 = performance.now();
+        const result = await detectFaceWasm(img);
+        const t1 = performance.now();
+        const execTime = t1 - t0;
+
+        times.push(execTime);
+
+        const line = `Iterasi ${i + 1}: ${execTime.toFixed(2)} ms, faces = ${result.faces}\n`;
+        logEl.textContent += line;
+        console.log(line.trim());
+      }
+
+      const sum = times.reduce((a, b) => a + b, 0);
+      const avg = sum / times.length;
+      const min = Math.min(...times);
+      const max = Math.max(...times);
+
+      const summaryText =
+        `OpenCV.js (WASM) - Iterations: ${iterations}\n` +
+        `Rata-rata: ${avg.toFixed(2)} ms\n` +
+        `Min: ${min.toFixed(2)} ms, Max: ${max.toFixed(2)} ms`;
+
+      summaryEl.textContent = summaryText;
+      logEl.textContent += '\n' + summaryText + '\n';
+
+      console.table(times.map((t, idx) => ({
+        iteration: idx + 1,
+        time_ms: t
+      })));
+    }
+
+    // ================== Event binding ==================
+    runBtn.addEventListener('click', () => {
+      runBenchmarkWasm().catch(err => {
+        console.error(err);
+        logEl.textContent += '\nError: ' + err.message;
+      });
+    });
+  </script>
+</body>
+</html>
